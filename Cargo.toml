@@ -1,0 +1,49 @@
+[package]
+name = "heard"
+version = "0.1.0"
+license = "GPL-3.0-only"
+repository = "https://github.com/shmuga/heard"
+edition = "2024"
+rust-version = "1.92"
+
+[lib]
+name = "heard"
+path = "src/lib.rs"
+
+[[bin]]
+name = "heard"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.36", default-features = false, features = ["wgpu", "accesskit", "default_fonts"] }
+egui = { version = "0.36", features = ["serde"] }
+egui-snarl = { version = "0.12", features = ["serde"] }
+petgraph = "0.8"
+# Decoding: WAV/BWF, AIFF, FLAC, MP3, AAC/ALAC in M4A (Voice Memos), Ogg Vorbis.
+symphonia = { version = "0.5", default-features = false, features = ["wav", "aiff", "pcm", "flac", "mp3", "aac", "alac", "isomp4", "ogg", "vorbis", "adpcm"] }
+hound = "3.5"
+cpal = "0.15"
+rustfft = "6"
+image = { version = "0.25", default-features = false, features = ["png"] }
+rfd = "0.15"
+rayon = "1.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "6"
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+log = "0.4"
+env_logger = "0.11"
+
+[dev-dependencies]
+egui_kittest = { version = "0.36", features = ["eframe", "wgpu"] }
+tempfile = "3"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.test]
+opt-level = 2
