@@ -157,6 +157,8 @@ pub enum Act {
     /// Put an edge at the playhead (true = start).
     TrimAtPlayhead(bool),
     TrimReset,
+    /// Keep only the selection (trim mode: the cut; on the result: map back or crop).
+    TrimToSelection,
     TrimDone,
 }
 
@@ -349,6 +351,7 @@ fn bindings(ctx: Ctx, visual: bool) -> Vec<(&'static str, B)> {
             (" ", A(Play)),
             ("B", A(Bypass)),
             ("c", A(ToggleTrim)),
+            ("C", A(TrimToSelection)),
             ("\\", A(ToggleCompare)),
             ("<Tab>", A(TogglePatch)),
             ("s", A(ToggleSpectrogram)),
@@ -443,6 +446,7 @@ fn bindings(ctx: Ctx, visual: bool) -> Vec<(&'static str, B)> {
             ("s", A(TrimAtPlayhead(true))),
             ("e", A(TrimAtPlayhead(false))),
             ("r", A(TrimReset)),
+            ("C", A(TrimToSelection)),
             (" ", A(Play)),
             ("(", A(Seek(-1))),
             (")", A(Seek(1))),
@@ -682,6 +686,7 @@ pub fn help(ctx: Ctx) -> Vec<(&'static str, &'static str)> {
             ("o O", "add node after / before"),
             ("B", "bypass node"),
             ("c", "trim tool"),
+            ("C", "trim to the selection"),
             ("s", "spectrogram"),
             ("R M", "randomize node, mutate all"),
             (".", "repeat last adjustment"),
@@ -697,6 +702,7 @@ pub fn help(ctx: Ctx) -> Vec<(&'static str, &'static str)> {
             ("h l / H L", "start ±10 ms / ±100 ms"),
             ("[ ] / { }", "end ±10 ms / ±100 ms"),
             ("s e", "start / end at the playhead"),
+            ("C", "trim to the selection"),
             ("Space ( ) 0", "play, nudge playhead, to start"),
             ("r", "reset"),
             ("c / Enter / Esc", "done"),
@@ -740,6 +746,7 @@ pub const COMMANDS: &[&str] = &[
     "rename",
     "import",
     "importfolder",
+    "exportlib",
     "split",
     "extract",
     "markers",

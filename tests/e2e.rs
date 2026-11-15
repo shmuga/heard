@@ -342,3 +342,184 @@ fn import_folder_and_audition() {
     );
     assert!(src.path().join("Drone/generator.wav").exists());
 }
+
+/// A stretch that changes the length while playing (loop on, a selection made before) must
+/// play the new length, not the old span.
+#[test]
+fn stretch_plays_new_length() {
+    let (_tmp, root) = library_with(&["knock.wav"]);
+    let mut h = harness(&root);
+    h.state_mut().settings.loop_play = true;
+    open(&mut h, "knock.wav");
+    let short = h.state().editor.as_ref().unwrap().shown_len();
+    h.state_mut().editor.as_mut().unwrap().selection = Some((0.0, short));
+    typ(&mut h, " ");
+    assert!(h.state().player.is_playing());
+    command(&mut h, "add paulstretch");
+    for _ in 0..10 {
+        h.run();
+    }
+    let ed = h.state().editor.as_ref().unwrap();
+    let long = ed.shown_len();
+    assert!(long > short * 4.0, "{short} -> {long}");
+    assert_eq!(ed.selection, None, "the old selection is dropped");
+    // Play again (stop, start) and run past the old length: still going, then loops.
+    typ(&mut h, " ");
+    if !h.state().player.is_playing() {
+        typ(&mut h, " ");
+    }
+    h.state_mut().editor.as_mut().unwrap().playhead = 0.0;
+    typ(&mut h, "  ");
+    let mut max = 0.0f64;
+    for _ in 0..((long + 1.0) * 10.0) as usize {
+        h.state().player.tick_silent(0.1);
+        max = max.max(h.state().player.position());
+    }
+    assert!(max > long - 0.5, "played to {max} of {long}");
+}
+
+/// Screen x of time `t` on the editor's waveform, and its vertical middle.
+fn wave_point(app: &HeardApp, t: f64) -> egui::Pos2 {
+    let (r, t0, t1) = app.editor.as_ref().unwrap().wave_map.unwrap();
+    egui::pos2(
+        r.min.x + ((t - t0) / (t1 - t0)) as f32 * r.width(),
+        r.center().y,
+    )
+}
+
+fn mouse_drag(h: &mut Harness<'static, HeardApp>, from: egui::Pos2, to: egui::Pos2) {
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Default::default(),
+    };
+    h.event(egui::Event::PointerMoved(from));
+    h.run();
+    h.event(button(from, true));
+    h.run();
+    for k in 1..=8 {
+        h.event(egui::Event::PointerMoved(
+            from + (to - from) * (k as f32 / 8.0),
+        ));
+        h.run();
+    }
+    h.event(button(to, false));
+    h.run();
+}
+
+fn trim_of(app: &HeardApp) -> heard::ops::Trim {
+    let g = &app.editor.as_ref().unwrap().doc.graph;
+    match &g[graph::trim_node(g).unwrap()].op {
+        Op::Trim(t) => t.clone(),
+        _ => unreachable!(),
+    }
+}
+
+/// Trim mode: the edges drag with the mouse.
+#[test]
+fn trim_edges_drag() {
+    let (_tmp, root) = library_with(&["take.wav"]);
+    let mut h = harness(&root);
+    open(&mut h, "take.wav");
+    typ(&mut h, "c");
+    let len = h.state().editor.as_ref().unwrap().shown_len();
+    // Start edge: from 0 to about 0.5 s (the press is on the edge, the drag moves on).
+    let (a, b) = (wave_point(h.state(), 0.0), wave_point(h.state(), 0.5));
+    mouse_drag(&mut h, a + egui::vec2(2.0, 0.0), b);
+    let t = trim_of(h.state());
+    assert!((t.start - 0.5).abs() < 0.05, "start dragged: {t:?}");
+    assert_eq!(h.state().editor.as_ref().unwrap().selection, None);
+    // End edge: from the end to 2.0 s.
+    let (a, b) = (wave_point(h.state(), len), wave_point(h.state(), 2.0));
+    mouse_drag(&mut h, a - egui::vec2(2.0, 0.0), b);
+    let t = trim_of(h.state());
+    assert!((t.end - 2.0).abs() < 0.05, "end dragged: {t:?}");
+}
+
+/// On the result: a selection trims through the chain, or crops after a time-changing node.
+#[test]
+fn trim_to_selection_on_result() {
+    let (_tmp, root) = library_with(&["take.wav"]);
+    let mut h = harness(&root);
+    open(&mut h, "take.wav");
+    h.state_mut().editor.as_mut().unwrap().doc.graph = {
+        let mut g = h.state().editor.as_ref().unwrap().doc.graph.clone();
+        let id = graph::trim_node(&g).unwrap();
+        g[id].op = Op::Trim(heard::ops::Trim {
+            start: 0.4,
+            end: 0.0,
+        });
+        g
+    };
+    for _ in 0..4 {
+        h.run();
+    }
+    // The result starts at 0.4 s of the source: selecting 0.2–1.0 keeps 0.6–1.4.
+    h.state_mut().editor.as_mut().unwrap().selection = Some((0.2, 1.0));
+    typ(&mut h, "C");
+    let t = trim_of(h.state());
+    assert!(
+        (t.start - 0.6).abs() < 1e-3 && (t.end - 1.4).abs() < 1e-3,
+        "{t:?} · {}",
+        h.state().status
+    );
+    for _ in 0..4 {
+        h.run();
+    }
+    let len = h.state().editor.as_ref().unwrap().shown_len();
+    assert!((len - 0.8).abs() < 0.01, "{len}");
+    // After a stretch the selection can't map back: a crop goes in before Output.
+    command(&mut h, "add paulstretch");
+    for _ in 0..6 {
+        h.run();
+    }
+    let long = h.state().editor.as_ref().unwrap().shown_len();
+    h.state_mut().editor.as_mut().unwrap().selection = Some((1.0, 3.0));
+    command(&mut h, "trim sel");
+    for _ in 0..6 {
+        h.run();
+    }
+    let ed = h.state().editor.as_ref().unwrap();
+    assert!(
+        (ed.shown_len() - 2.0).abs() < 0.01,
+        "{long} -> {}",
+        ed.shown_len()
+    );
+    let trims = ed
+        .doc
+        .graph
+        .node_ids()
+        .filter(|(_, n)| matches!(n.op, Op::Trim(_)))
+        .count();
+    assert_eq!(trims, 2);
+    // The sound's own cut is untouched.
+    let t = trim_of(h.state());
+    assert!((t.start - 0.6).abs() < 1e-3, "{t:?}");
+}
+
+/// With snap on (the default), a mouse selection lands on zero crossings.
+#[test]
+fn selection_snaps_to_zero_crossings() {
+    let (_tmp, root) = library_with(&["take.wav"]);
+    let mut h = harness(&root);
+    open(&mut h, "take.wav");
+    assert!(h.state().settings.snap_zero);
+    let (a, b) = (wave_point(h.state(), 0.613), wave_point(h.state(), 1.377));
+    mouse_drag(&mut h, a, b);
+    let ed = h.state().editor.as_ref().unwrap();
+    let (s, e) = ed.selection.expect("selected");
+    let audio = &ed.preview.as_ref().unwrap().audio;
+    let near_zero = |t: f64| {
+        let i = (t * audio.rate as f64).round() as usize;
+        let v = |k: usize| audio.ch.iter().map(|c| c[k]).sum::<f32>();
+        // A sign change touches this sample.
+        (v(i) < 0.0) != (v(i + 1) < 0.0) || (v(i - 1) < 0.0) != (v(i) < 0.0)
+    };
+    assert!(near_zero(s) && near_zero(e), "{s} {e}");
+    // Off: the edges follow the mouse exactly.
+    command(&mut h, "set nosnap");
+    let (a, b) = (wave_point(h.state(), 0.613), wave_point(h.state(), 1.377));
+    mouse_drag(&mut h, a, b);
+    assert!(!h.state().settings.snap_zero);
+}

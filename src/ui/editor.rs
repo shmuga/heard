@@ -39,7 +39,11 @@ impl HeardApp {
         let last = self.settings.last_recipe.as_ref().map(|l| l.name.clone());
         let dirty = self.editor_dirty();
         let playing = self.editor_playing();
-        let (mut looping, mut spectro) = (self.settings.loop_play, self.settings.spectrogram);
+        let (mut looping, mut spectro, mut snap) = (
+            self.settings.loop_play,
+            self.settings.spectrogram,
+            self.settings.snap_zero,
+        );
         let Some(ed) = &mut self.editor else { return };
         let len = ed.shown_len();
         let zoom = ed.view.factor(len);
@@ -124,6 +128,18 @@ impl HeardApp {
             }
             if tool(
                 ui,
+                Icon::ZeroCross,
+                "Snap to zero crossings",
+                "Snap selection and trim edges to zero crossings, so cuts don't click (:set snap)",
+                Some(snap),
+                true,
+            )
+            .clicked()
+            {
+                snap = !snap;
+            }
+            if tool(
+                ui,
                 Icon::Spectrum,
                 "Spectrogram",
                 "Spectrogram under the waveform (s)",
@@ -198,9 +214,13 @@ impl HeardApp {
                 theme::badge(ui, "unsaved", theme::ORANGE);
             }
         }
-        if looping != self.settings.loop_play || spectro != self.settings.spectrogram {
+        if looping != self.settings.loop_play
+            || spectro != self.settings.spectrogram
+            || snap != self.settings.snap_zero
+        {
             self.settings.loop_play = looping;
             self.settings.spectrogram = spectro;
+            self.settings.snap_zero = snap;
             self.save_settings();
         }
         if play {
@@ -328,6 +348,7 @@ impl HeardApp {
         let mut actions: Vec<EdAction> = vec![];
         let playing_pos = self.editor_playing().then(|| self.player.position());
         let spectro = self.settings.spectrogram;
+        let snap = self.settings.snap_zero;
         let mut seek: Option<f64> = None;
 
         let patch_mode = self.editor.as_ref().is_some_and(|e| e.patch);
@@ -352,7 +373,7 @@ impl HeardApp {
                 if patch_mode {
                     patch_center(ui, ed);
                 } else {
-                    wave_area(ui, ed, playing_pos, spectro, &mut seek);
+                    wave_area(ui, ed, playing_pos, spectro, snap, &mut seek);
                 }
             });
         if let Some(t) = seek {
@@ -810,18 +831,26 @@ fn node_card(
     ui.add_space(6.0);
 }
 
+/// How close (px) the pointer must be to grab a trim edge or a marker.
+const GRAB_PX: f32 = 10.0;
+
 fn trim_controls(ui: &mut Ui, ed: &mut Editor, id: NodeId) {
-    let len = ed.source_len() as f32;
+    // The sound's own cut is in source time; a later Trim (a crop of the result) is in the
+    // time of whatever feeds it, which is about what's shown when it sits before Output.
+    let main = graph::trim_node(&ed.doc.graph) == Some(id);
+    let shown_len = ed.shown_len() as f32;
     let sel = ed.selection;
     let trimming = ed.tool == Tool::Trim;
-    let shown_trim_input = ed
-        .preview
-        .as_ref()
-        .is_some_and(|p| p.shown == Shown::TrimInput);
     let Op::Trim(t) = &mut ed.doc.graph[id].op else {
         return;
     };
+    let len = if main {
+        ed.source.as_ref().map(|s| s.seconds()).unwrap_or(0.0) as f32
+    } else {
+        (t.start + shown_len).max(t.end)
+    };
     let mut end = t.end_or(len);
+    let mut trim_sel = false;
     ui.horizontal(|ui| {
         ui.label("Start");
         ui.add(
@@ -849,22 +878,21 @@ fn trim_controls(ui: &mut Ui, ed: &mut Editor, id: NodeId) {
         }
     });
     ui.horizontal_wrapped(|ui| {
-        if theme::sel(ui, trimming, if trimming { "Done" } else { "Edit trim" })
-            .on_hover_text("c — drag the start / end handles on the waveform")
-            .clicked()
+        if main
+            && theme::sel(ui, trimming, if trimming { "Done" } else { "Edit trim" })
+                .on_hover_text("c — drag the start / end handles on the waveform")
+                .clicked()
         {
             ed.tool = if trimming { Tool::None } else { Tool::Trim };
             ed.patch = false;
         }
-        if let Some((a, b)) = sel
-            && shown_trim_input
+        if sel.is_some()
             && ui
                 .button("Trim to selection")
-                .on_hover_text("Keep only the selected part")
+                .on_hover_text("C — keep only the selected part (works on the result too)")
                 .clicked()
         {
-            t.start = a as f32;
-            t.end = b as f32;
+            trim_sel = true;
         }
         if ui.button("Reset").clicked() {
             *t = Default::default();
@@ -879,6 +907,9 @@ fn trim_controls(ui: &mut Ui, ed: &mut Editor, id: NodeId) {
             .color(theme::TEXT_DIM),
         );
     });
+    if trim_sel {
+        let _ = ed.trim_to_selection();
+    }
 }
 
 fn slices_section(ui: &mut Ui, ed: &mut Editor, actions: &mut Vec<EdAction>) {
@@ -1116,6 +1147,7 @@ fn wave_area(
     ed: &mut Editor,
     playing: Option<f64>,
     spectro_on: bool,
+    snap: bool,
     seek: &mut Option<f64>,
 ) {
     let avail = ui.available_rect_before_wrap();
@@ -1171,6 +1203,7 @@ fn wave_area(
         t0,
         t1,
     };
+    ed.wave_map = Some((wave_r, t0, t1));
 
     // ---- interaction
     let resp = ui.interact(
@@ -1203,10 +1236,23 @@ fn wave_area(
         _ => None,
     };
     let to_t = |x: f32| map.t(x).clamp(0.0, len);
+    // Zero-crossing snap: look a few pixels (at least 2 ms, at most 20 ms) either way.
+    let snap_window = (map.secs_per_px() * 6.0).clamp(0.002, 0.02);
+    let snap_t = |t: f64| {
+        if snap {
+            audio.zero_crossing_near(t, snap_window)
+        } else {
+            t
+        }
+    };
+    // Decide what a drag grabs from where the button went down: by the time egui reports
+    // drag_started the pointer has already moved past the drag threshold.
     if resp.drag_started()
-        && let Some(p) = resp.interact_pointer_pos()
+        && let Some(p) = ui
+            .input(|i| i.pointer.press_origin())
+            .or(resp.interact_pointer_pos())
     {
-        let near = |t: f64| (map.x(t) - p.x).abs() < 7.0;
+        let near = |t: f64| (map.x(t) - p.x).abs() < GRAB_PX;
         ed.drag = if let Some((a, b)) = trim.filter(|(a, b)| near(*a) || near(*b)) {
             Some(WaveDrag::TrimEdge(
                 near(a) && (!near(b) || (map.x(a) - p.x).abs() <= (map.x(b) - p.x).abs()),
@@ -1226,10 +1272,12 @@ fn wave_area(
         let t = to_t(p.x);
         match d {
             WaveDrag::Select(a) => {
+                let (a, t) = (snap_t(a), snap_t(t));
                 let (lo, hi) = if t < a { (t, a) } else { (a, t) };
                 ed.selection = (hi - lo > map.secs_per_px() * 2.0).then_some((lo, hi));
             }
             WaveDrag::TrimEdge(start) => {
+                let t = snap_t(t);
                 if let Some(id) = trim_id
                     && let Op::Trim(tr) = &mut ed.doc.graph[id].op
                 {
@@ -1280,7 +1328,7 @@ fn wave_area(
             .copied()
             .filter(|m| *m > t)
             .fold(len, f64::min);
-        ed.selection = Some((a, b));
+        ed.selection = Some((snap_t(a), snap_t(b)));
     }
     if resp.secondary_clicked()
         && shown == Shown::Output
@@ -1454,7 +1502,9 @@ fn wave_area(
     painter.galley(pill.min + vec2(5.0, 2.0), g, theme::BOX_TEXT);
     if resp.hovered() && ed.drag.is_none() {
         let near_edge = trim.is_some_and(|(a, b)| {
-            hover.is_some_and(|p| (map.x(a) - p.x).abs() < 7.0 || (map.x(b) - p.x).abs() < 7.0)
+            hover.is_some_and(|p| {
+                (map.x(a) - p.x).abs() < GRAB_PX || (map.x(b) - p.x).abs() < GRAB_PX
+            })
         });
         ui.ctx().set_cursor_icon(if near_edge {
             egui::CursorIcon::ResizeHorizontal

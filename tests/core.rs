@@ -606,3 +606,77 @@ fn real_sounds_decode() {
     }
     assert!(n > 0);
 }
+
+#[test]
+fn zero_crossing_snap() {
+    // 100 Hz: crossings every 5 ms. Stereo, same on both sides.
+    let sr = 48000;
+    let l: Vec<f32> = (0..sr)
+        .map(|i| (std::f32::consts::TAU * 100.0 * i as f32 / sr as f32).sin())
+        .collect();
+    let a = heard::audio::Audio::from_channels(sr as u32, vec![l.clone(), l]);
+    let t = a.zero_crossing_near(0.0123, 0.01);
+    assert!((t - 0.010).abs() < 1.0 / sr as f64 * 1.5, "{t}");
+    let t = a.zero_crossing_near(0.0138, 0.01);
+    assert!((t - 0.015).abs() < 1.0 / sr as f64 * 1.5, "{t}");
+    // Nothing in reach: unchanged. The ends stay put.
+    assert_eq!(a.zero_crossing_near(0.0123, 0.0001), 0.0123);
+    assert_eq!(a.zero_crossing_near(0.0, 0.01), 0.0);
+}
+
+#[test]
+fn export_processed_is_flat_named_by_tags_collection_name_skips_raw() {
+    let (_d, lib) = lib_with(&["a.wav", "b.wav", "c.wav", "d.wav", "inbox only.wav"]);
+    lib.create_collection("Doors").unwrap();
+    lib.create_collection("Drone").unwrap();
+    lib.create_collection("raw").unwrap();
+    let file = |title: &str, col: &str, name: &str, tags: &[&str]| {
+        let it = lib
+            .inbox_items()
+            .into_iter()
+            .find(|i| i.title() == title)
+            .unwrap();
+        let sc = Sidecar {
+            name: name.into(),
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            ..Default::default()
+        };
+        lib.file_into(&it, col, &sc).unwrap()
+    };
+    let gate = file("a.wav", "Doors", "squeaky gate", &["metal", "night"]);
+    let hum = file("b.wav", "Drone", "fridge", &[]);
+    let _untouched = file("c.wav", "Drone", "untouched", &["x"]);
+    let raw = file("d.wav", "raw", "take 1", &["y"]);
+    // Rendered edits for three. Untouched filed sounds go out as their original; the Inbox
+    // and Raw don't.
+    for it in [&gate, &hum, &raw] {
+        let e = lib.edit_path(it).unwrap();
+        std::fs::copy(&it.orig, e).unwrap();
+    }
+    let out = tempfile::tempdir().unwrap();
+    let (dir, n) = lib.export_processed(out.path()).unwrap();
+    assert_eq!(
+        (dir.as_path(), n),
+        (out.path(), 3),
+        "an empty folder is used as is"
+    );
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "Drone_fridge.wav",
+            "metal-night_Doors_squeaky gate.wav",
+            "x_Drone_untouched.wav"
+        ]
+    );
+    // Again: the folder isn't empty now, so a dated sub-folder; nothing overwritten.
+    let (dir2, n2) = lib.export_processed(out.path()).unwrap();
+    assert_eq!(n2, 3);
+    assert_ne!(dir2, dir);
+    assert!(dir2.starts_with(out.path()));
+    assert!(dir2.join("Drone_fridge.wav").exists());
+}

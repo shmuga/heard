@@ -78,8 +78,17 @@ impl Player {
             return;
         }
         let n = buf.frames() as f64;
+        let same_len = s.buf.as_ref().is_some_and(|b| b.frames() == buf.frames());
+        if same_len {
+            // Same length (a parameter tweak): keep the play / loop range.
+            s.end = s.end.min(n);
+        } else {
+            // The length changed (stretch, varispeed, a longer tail): the old range points at
+            // different audio now, so play to the end of the new buffer.
+            s.start = 0.0;
+            s.end = n;
+        }
         s.pos = s.pos.min(n);
-        s.end = if s.looping { s.end.min(n) } else { n };
         s.start = s.start.min(s.end);
         s.buf = Some(buf);
         s.key = key;

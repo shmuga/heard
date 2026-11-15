@@ -269,6 +269,15 @@ impl HeardApp {
                     {
                         self.act(&ctx, Act::RunCommand("importfolder".into()));
                     }
+                    if ui
+                        .button("Export library…")
+                        .on_hover_text(
+                            ":exportlib · copy every filed sound except the Raw collection (its saved edit, or the original if untouched) into one flat folder as tags_collection_name.wav. An empty folder is used as is; otherwise a dated sub-folder is made, so nothing is overwritten.",
+                        )
+                        .clicked()
+                    {
+                        self.act(&ctx, Act::RunCommand("exportlib".into()));
+                    }
                     if ui.button("Reveal Inbox").clicked()
                         && let Some(lib) = &self.lib
                     {

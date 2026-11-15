@@ -638,6 +638,13 @@ impl HeardApp {
                 })
             }
             TrimReset => self.with_trim(|t, _, _| *t = Default::default()),
+            TrimToSelection => {
+                if let Some(ed) = &mut self.editor {
+                    self.status = match ed.trim_to_selection() {
+                        Ok(m) | Err(m) => m,
+                    };
+                }
+            }
             TrimDone => {
                 if let Some(ed) = &mut self.editor {
                     ed.tool = Tool::None;
@@ -1144,21 +1151,10 @@ impl HeardApp {
             "trim" => {
                 // :trim 0.5 3.2 (seconds, or m:ss, or 250ms) · :trim sel · :trim reset
                 let words: Vec<&str> = arg.split_whitespace().collect();
-                let sel = self.editor.as_ref().and_then(|e| e.selection);
                 match words.as_slice() {
                     [] => self.act(ctx, Act::ToggleTrim),
                     ["reset" | "off"] => self.act(ctx, Act::TrimReset),
-                    ["sel" | "selection"] => match sel {
-                        Some((a, b))
-                            if self.editor.as_ref().is_some_and(|e| e.tool == Tool::Trim) =>
-                        {
-                            self.with_trim(|t, _, _| {
-                                t.start = a as f32;
-                                t.end = b as f32;
-                            })
-                        }
-                        _ => self.status = "Select on the waveform in trim mode (c) first".into(),
-                    },
+                    ["sel" | "selection"] => self.act(ctx, Act::TrimToSelection),
                     [a, rest @ ..] => match (parse_time(a), rest.first().map(|b| parse_time(b))) {
                         (Some(a), None) => self.with_trim(|t, _, _| t.start = a as f32),
                         (Some(a), Some(Some(b))) if b > a => self.with_trim(|t, len, _| {
@@ -1218,6 +1214,16 @@ impl HeardApp {
                 }
             }
             "play" => self.act(ctx, Act::Play),
+            "exportlib" | "exportlibrary" => {
+                if let Some(d) = rfd::FileDialog::new()
+                    .set_title(
+                        "Export the library (all but Raw) — a flat folder of tags_collection_name.wav",
+                    )
+                    .pick_folder()
+                {
+                    self.export_library(ctx, d);
+                }
+            }
             "importfolder" | "importdir" => {
                 if let Some(d) = rfd::FileDialog::new()
                     .set_title("Import a folder — its sub-folders become collections")
@@ -1293,6 +1299,8 @@ impl HeardApp {
                         "noloop" => self.settings.loop_play = false,
                         "spectrogram" | "spec" => self.settings.spectrogram = true,
                         "nospectrogram" | "nospec" => self.settings.spectrogram = false,
+                        "snap" => self.settings.snap_zero = true,
+                        "nosnap" => self.settings.snap_zero = false,
                         "audition" => self.settings.audition = true,
                         "noaudition" => self.settings.audition = false,
                         _ => self.status = format!("Unknown option: {w}"),
@@ -1387,6 +1395,8 @@ impl HeardApp {
                     "noloop",
                     "spectrogram",
                     "nospectrogram",
+                    "snap",
+                    "nosnap",
                     "audition",
                     "noaudition",
                 ]

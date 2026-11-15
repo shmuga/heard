@@ -4,6 +4,7 @@ use crate::audio::Audio;
 use crate::graph::{self, Evaluator, Graph};
 use crate::io::{Overview, SoundInfo};
 use crate::library::{FolderImport, Item, ItemRef, Library};
+use crate::ops::Op;
 use crate::player::Player;
 use crate::presets::{self, Preset};
 use crate::settings::{Layout, Settings};
@@ -119,6 +120,8 @@ pub enum Msg {
     /// Background batch render (filing / pasting recipes onto several sounds).
     Batch(Vec<(ItemRef, Result<PathBuf, String>)>),
     FolderImported(Result<FolderImport, String>),
+    /// Library export: (folder, count) or an error.
+    LibraryExported(Result<(PathBuf, usize), String>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -194,6 +197,8 @@ pub struct Editor {
     pub playhead: f64,
     pub markers: Vec<f64>,
     pub drag: Option<WaveDrag>,
+    /// The waveform's last on-screen rect and visible time range (for tests and tools).
+    pub wave_map: Option<(egui::Rect, f64, f64)>,
     /// Keyboard cursor over the slider rows (see `ui::vim::rows`).
     pub param_cursor: usize,
     pub cursor_moved: bool,
@@ -217,6 +222,108 @@ impl Editor {
 
     pub fn source_len(&self) -> f64 {
         self.source.as_ref().map(|s| s.seconds()).unwrap_or(0.0)
+    }
+
+    /// Keep only the selected part. In trim mode the selection is in source time and sets the
+    /// Trim node. On the result, it maps back through the chain to the last Trim with nothing
+    /// time-changing after it; when a node like Paulstretch sits in between, a second Trim is
+    /// added just before Output (a crop of the result).
+    pub fn trim_to_selection(&mut self) -> Result<String, String> {
+        let (a, b) = self
+            .selection
+            .filter(|(a, b)| b - a > 0.005)
+            .ok_or("Select a region on the waveform first")?;
+        let shown = self
+            .preview
+            .as_ref()
+            .map(|p| p.shown)
+            .ok_or("Wait for the preview")?;
+        let shown_len = self.shown_len();
+        let g = &mut self.doc.graph;
+        let msg = match shown {
+            Shown::Before => return Err("Leave before mode (\\) first".into()),
+            Shown::TrimInput => {
+                let id = graph::trim_node(g).ok_or("No Trim node")?;
+                if let Op::Trim(t) = &mut g[id].op {
+                    t.start = a as f32;
+                    t.end = if b >= shown_len - 1e-4 { 0.0 } else { b as f32 };
+                }
+                "Trimmed to the selection"
+            }
+            Shown::Output => {
+                let chain = graph::chain(g);
+                let mut target = None;
+                for &id in chain.iter().rev() {
+                    let n = &g[id];
+                    if n.bypass {
+                        continue;
+                    }
+                    if matches!(n.op, Op::Trim(_)) {
+                        target = Some(id);
+                        break;
+                    }
+                    if n.op.changes_time() {
+                        break;
+                    }
+                }
+                match target {
+                    Some(id) => {
+                        let Op::Trim(t) = &mut g[id].op else {
+                            unreachable!()
+                        };
+                        let start = t.start;
+                        t.start = start + a as f32;
+                        // To the end of what's shown (a reverb tail too): keep the old end.
+                        if b < shown_len - 1e-4 {
+                            let e = start + b as f32;
+                            t.end = if t.end > 0.0 { e.min(t.end) } else { e };
+                        }
+                        "Trimmed to the selection"
+                    }
+                    None => {
+                        let out = graph::output_node(g).ok_or("No Output node")?;
+                        let (prev, pin) =
+                            graph::input_pin(g, out, 0).ok_or("Nothing is wired to Output")?;
+                        let pos = g.get_node_info(out).map(|n| n.pos).unwrap_or_default();
+                        let crop = g.insert_node(
+                            pos,
+                            graph::NodeData::new(Op::Trim(crate::ops::Trim {
+                                start: a as f32,
+                                end: if b >= shown_len - 1e-4 { 0.0 } else { b as f32 },
+                            })),
+                        );
+                        let from = egui_snarl::OutPinId {
+                            node: prev,
+                            output: pin,
+                        };
+                        let to = egui_snarl::InPinId {
+                            node: out,
+                            input: 0,
+                        };
+                        g.disconnect(from, to);
+                        g.connect(
+                            from,
+                            egui_snarl::InPinId {
+                                node: crop,
+                                input: 0,
+                            },
+                        );
+                        g.connect(
+                            egui_snarl::OutPinId {
+                                node: crop,
+                                output: 0,
+                            },
+                            to,
+                        );
+                        graph::relayout_chain(g);
+                        "Cropped the result to the selection (a Trim before Output)"
+                    }
+                }
+            }
+        };
+        self.selection = None;
+        self.playhead = 0.0;
+        Ok(msg.into())
     }
 
     /// A key for the player: which buffer is loaded.
@@ -530,6 +637,10 @@ impl HeardApp {
                         ed.render_ms = ms;
                         let len = p.audio.seconds();
                         let first = ed.preview.is_none();
+                        let resized = ed
+                            .preview
+                            .as_ref()
+                            .is_some_and(|o| o.audio.frames() != p.audio.frames());
                         let shown_changed = ed.preview.as_ref().is_some_and(|o| o.shown != p.shown);
                         // Keep the playhead going on the fresh render (live tweaking).
                         if self.player.is_playing_key(ed.play_key()) {
@@ -539,7 +650,11 @@ impl HeardApp {
                             ed.view.fit();
                         }
                         ed.view.clamp(len);
-                        if let Some((a, b)) = ed.selection {
+                        // A selection is in seconds: after a length change it no longer
+                        // covers the same audio, so drop it (else play keeps the old span).
+                        if resized {
+                            ed.selection = None;
+                        } else if let Some((a, b)) = ed.selection {
                             ed.selection = (a < len).then_some((a, b.min(len)));
                         }
                         ed.markers.retain(|m| *m < len);
@@ -630,6 +745,15 @@ impl HeardApp {
                         }
                     }
                     self.refresh();
+                }
+                Msg::LibraryExported(res) => {
+                    self.status = match res {
+                        Ok((dir, n)) => {
+                            let _ = std::process::Command::new("open").arg(&dir).spawn();
+                            format!("Exported {n} sound(s) to {}", dir.display())
+                        }
+                        Err(e) => format!("Export failed: {e}"),
+                    };
                 }
                 Msg::FolderImported(res) => {
                     self.importing = false;
@@ -822,6 +946,7 @@ impl HeardApp {
             playhead: 0.0,
             markers: vec![],
             drag: None,
+            wave_map: None,
             param_cursor: 0,
             cursor_moved: false,
             last_adjust: None,
@@ -1623,6 +1748,16 @@ impl HeardApp {
 
     /// Copy a folder in: its sub-folders become collections (sounds filed as they are),
     /// loose files go to the Inbox. Runs in the background.
+    /// Export the filed sounds outside Raw (edit, or original) as a flat folder of WAVs named
+    /// `tags_collection_name.wav`.
+    pub fn export_library(&mut self, ctx: &egui::Context, dest: PathBuf) {
+        let Some(lib) = self.lib.clone() else { return };
+        self.status = format!("Exporting to {}…", dest.display());
+        self.worker.spawn(ctx, move || {
+            Msg::LibraryExported(lib.export_processed(&dest).map_err(|e| format!("{e:#}")))
+        });
+    }
+
     pub fn import_folder(&mut self, ctx: &egui::Context, folder: PathBuf) {
         let Some(lib) = self.lib.clone() else { return };
         if lib.root.starts_with(&folder) || folder.starts_with(&lib.root) {

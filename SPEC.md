@@ -50,6 +50,9 @@ GPL-3.0. See README for usage, CREDITS.md for components.
 - WAV, source sample rate, channels as rendered, 24-bit int (32-bit float for float
   sources).
 
+- Library export: every filed sound outside the special `Raw` collection (its rendered edit,
+  or the original as WAV), copied flat as `tags_collection_name.wav` into an empty folder or a new dated sub-folder.
+
 ## Look
 - Found's light-grey patcher theme: mid-grey chrome, dark object boxes, pastel node tints,
   a single blue accent. Waveforms are dark object-grey on a light lane. Library tiles are

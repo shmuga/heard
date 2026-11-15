@@ -181,6 +181,7 @@ impl HeardApp {
                 theme::check(ui, &mut self.settings.audition, "Audition: play sounds as the library cursor moves onto them");
                 theme::check(ui, &mut self.settings.loop_play, "Loop playback in the editor");
                 theme::check(ui, &mut self.settings.spectrogram, "Show the spectrogram in the editor");
+                theme::check(ui, &mut self.settings.snap_zero, "Snap selections and trims to zero crossings");
                 ui.label(RichText::new("Rendered edits are WAV at the source's sample rate and channels — 24-bit, or 32-bit float when the source is float.").small().color(theme::TEXT_DIM));
                 if let Some(e) = &self.player.error {
                     ui.colored_label(theme::RED, format!("No audio output: {e}"));

@@ -209,6 +209,9 @@ impl WaveLook {
     }
 }
 
+/// Below this many frames per pixel the samples are drawn as a line.
+const SAMPLE_LINE_SPP: f64 = 4.0;
+
 /// Draw every channel stacked in `rect` for the time range in `map`. Zoomed in far enough,
 /// the samples are drawn as a line.
 pub fn draw(p: &Painter, map: Map, audio: &Audio, peaks: &WavePeaks, look: WaveLook) {
@@ -232,7 +235,7 @@ pub fn draw(p: &Painter, map: Map, audio: &Audio, peaks: &WavePeaks, look: WaveL
             );
         }
         let y = |v: f32| mid - v.clamp(-1.0, 1.0) * amp;
-        if spp < 2.0 {
+        if spp < SAMPLE_LINE_SPP {
             // Sample view: a polyline through the samples.
             let ch = &audio.ch[c];
             let f0 = (map.t0 * rate).floor().max(0.0) as usize;
@@ -253,6 +256,10 @@ pub fn draw(p: &Painter, map: Map, audio: &Audio, peaks: &WavePeaks, look: WaveL
         let x0 = map.rect.min.x.floor() as i32;
         let x1 = map.rect.max.x.ceil() as i32;
         let mut mesh = egui::Mesh::default();
+        // Fewer frames per pixel than the pyramid's finest block: read the samples, and take
+        // in the last sample of the previous column so steep slopes stay joined.
+        let raw = spp < peaks.levels.first().map_or(1.0, |(bs, _)| *bs as f64) * 2.0;
+        let ch = &audio.ch[c];
         for x in x0..x1 {
             let ta = map.t(x as f32);
             let tb = map.t(x as f32 + 1.0);
@@ -264,7 +271,16 @@ pub fn draw(p: &Painter, map: Map, audio: &Audio, peaks: &WavePeaks, look: WaveL
             if fb <= fa {
                 continue;
             }
-            if let Some((lo, hi)) = peaks.range(c, fa, fb) {
+            let mm = if raw {
+                let s = &ch[fa.saturating_sub(1)..fb.min(ch.len())];
+                (!s.is_empty()).then(|| {
+                    s.iter()
+                        .fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(*v), hi.max(*v)))
+                })
+            } else {
+                peaks.range(c, fa, fb)
+            };
+            if let Some((lo, hi)) = mm {
                 let (top, bot) = (y(hi), y(lo).max(y(hi) + 1.0));
                 mesh.add_colored_rect(
                     Rect::from_min_max(pos2(x as f32, top), pos2(x as f32 + 1.0, bot)),
@@ -344,15 +360,22 @@ pub const SPEC_ROWS: usize = 256;
 
 /// Log-frequency spectrogram of the mono mix as an image, `cols` columns spanning the sound.
 pub fn spectrogram(a: &Audio, cols: usize) -> egui::ColorImage {
-    use crate::ops::dsp::Fft;
     use rustfft::num_complex::Complex32;
     let cols = cols.clamp(16, 4096);
     let rows = SPEC_ROWS;
     let m = a.mix_mono();
     // Short sounds get shorter windows (a 46 ms window would smear a 0.3 s hit).
     let win_ms = (a.seconds() as f32 * 1000.0 / 24.0).clamp(6.0, 46.0);
-    let n = crate::ops::dsp::fft_size(a.rate, win_ms).max(256);
+    let w = crate::ops::dsp::fft_size(a.rate, win_ms).max(256);
+    // A short window can't resolve the low end (a 256-sample window has 172 Hz bins at
+    // 44.1 kHz): rows below a few bins of it come from a long window instead, crossfaded over
+    // an octave. Both are zero-padded to one size, which interpolates the spectrum.
+    let wl = crate::ops::dsp::fft_size(a.rate, 46.0).max(w);
+    let n = (w * 4).max(wl * 2).max(4096);
     let bins = n / 2 + 1;
+    let fft = rustfft::FftPlanner::<f32>::new().plan_fft_forward(n);
+    let (win, win_l) = (crate::ops::dsp::hann(w), crate::ops::dsp::hann(wl));
+    let cross_hz = 4.0 * a.rate as f32 / w as f32;
     let nyq = a.rate as f32 / 2.0;
     let (fmin, fmax) = (30.0f32, nyq);
     // Row r (0 = top) → bin range.
@@ -366,22 +389,64 @@ pub fn spectrogram(a: &Audio, cols: usize) -> egui::ColorImage {
     let mags: Vec<Vec<f32>> = (0..cols)
         .into_par_iter()
         .map_init(
-            || (Fft::new(n), vec![Complex32::new(0.0, 0.0); n]),
-            |(fft, buf), k| {
+            || {
+                (
+                    vec![Complex32::new(0.0, 0.0); n],
+                    vec![Complex32::new(0.0, 0.0); n],
+                )
+            },
+            |(buf, buf_l), k| {
                 let center = ((k as f64 + 0.5) / cols as f64 * frames as f64) as isize;
-                fft.analyze(&m, center - (n / 2) as isize, buf);
+                let analyze = |buf: &mut Vec<Complex32>, win: &[f32]| {
+                    let len = win.len();
+                    let start = center - (len / 2) as isize;
+                    for (j, o) in buf.iter_mut().enumerate() {
+                        let i = start + j as isize;
+                        let v = if j < len && i >= 0 && (i as usize) < frames {
+                            m[i as usize] * win[j]
+                        } else {
+                            0.0
+                        };
+                        *o = Complex32::new(v, 0.0);
+                    }
+                    fft.process(buf);
+                };
+                analyze(buf, &win);
+                let long = wl > w;
+                if long {
+                    analyze(buf_l, &win_l);
+                }
+                // Peak magnitude over rows lo..hi (in bins), normalised to the window.
+                let level = |buf: &[Complex32], len: usize, lo: f32, hi: f32| {
+                    let mx = if hi - lo < 1.0 {
+                        // Narrower than a bin: interpolate at the row's centre.
+                        let b = (lo + hi) * 0.5;
+                        let i = (b.floor() as usize).min(bins - 2);
+                        let f = (b - i as f32).clamp(0.0, 1.0);
+                        buf[i].norm() * (1.0 - f) + buf[i + 1].norm() * f
+                    } else {
+                        (lo.floor() as usize..(hi.ceil() as usize).min(bins))
+                            .map(|b| buf[b].norm())
+                            .fold(0.0f32, f32::max)
+                    };
+                    20.0 * (mx / (len as f32 * 0.25) + 1e-9).log10()
+                };
                 (0..rows)
                     .map(|r| {
                         let (hi, lo) = (edges[r], edges[r + 1]);
-                        let (b0, b1) = (
-                            lo.floor() as usize,
-                            (hi.ceil() as usize).max(lo as usize + 1),
-                        );
-                        let mut mx = 0.0f32;
-                        for b in b0..b1.min(bins) {
-                            mx = mx.max(buf[b].norm());
+                        let short = level(buf, w, lo, hi);
+                        if !long {
+                            return short;
                         }
-                        20.0 * (mx / (n as f32 * 0.25) + 1e-9).log10()
+                        let hz = (lo + hi) * 0.5 / (bins - 1) as f32 * nyq;
+                        // 0 = long window (below cross / 2), 1 = short (above cross).
+                        let u = ((hz / cross_hz).log2() + 1.0).clamp(0.0, 1.0);
+                        if u >= 1.0 {
+                            short
+                        } else {
+                            let l = level(buf_l, wl, lo, hi);
+                            l + (short - l) * u
+                        }
                     })
                     .collect()
             },

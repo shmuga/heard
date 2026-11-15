@@ -91,8 +91,12 @@ pub fn source_node(g: &Graph) -> Option<NodeId> {
     find(g, |o| matches!(o, Op::Source))
 }
 
+/// The sound's own cut: the first Trim on the chain (a later one is a crop of the result).
 pub fn trim_node(g: &Graph) -> Option<NodeId> {
-    find(g, |o| matches!(o, Op::Trim(_)))
+    chain(g)
+        .into_iter()
+        .find(|id| matches!(g[*id].op, Op::Trim(_)))
+        .or_else(|| find(g, |o| matches!(o, Op::Trim(_))))
 }
 
 /// The (node, output) wired into `node`'s input `input`.

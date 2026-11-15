@@ -142,6 +142,14 @@ impl Item {
     }
 }
 
+/// `Raw` (any case) is a special collection: unprocessed takes kept for reference, never
+/// exported.
+pub const RAW_COLLECTION: &str = "Raw";
+
+pub fn is_raw_collection(name: &str) -> bool {
+    name.eq_ignore_ascii_case(RAW_COLLECTION)
+}
+
 pub fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -649,6 +657,89 @@ impl Library {
             ),
             ItemRef::Inbox(_) | ItemRef::Trashed { .. } => None,
         }
+    }
+
+    /// The flat export name of a processed sound: `tag1-tag2_collection_name` (no tags part
+    /// when it has none).
+    pub fn export_stem(item: &Item, sc: &Sidecar) -> String {
+        let mut parts = vec![];
+        let tags: Vec<String> = sc
+            .tags
+            .iter()
+            .map(|t| clean_name(t))
+            .filter(|t| !t.is_empty())
+            .collect();
+        if !tags.is_empty() {
+            parts.push(tags.join("-"));
+        }
+        if let Some(c) = item.collection() {
+            parts.push(clean_name(c));
+        }
+        parts.push(clean_name(&item.title()));
+        parts.join("_")
+    }
+
+    /// Export every filed sound outside the `Raw` collection (its rendered edit, or the
+    /// original when it has none: filing, naming and tagging it is the processing) as a flat
+    /// list of WAVs named `tags_collection_name.wav`. Into `dest` if it's empty, else into a new
+    /// dated sub-folder of it, so nothing there is ever overwritten. Returns (folder, count).
+    pub fn export_processed(&self, dest: &Path) -> Result<(PathBuf, usize)> {
+        let items: Vec<Item> = self
+            .all_items()
+            .into_iter()
+            .filter(|i| !i.collection().is_some_and(is_raw_collection))
+            .collect();
+        if items.is_empty() {
+            anyhow::bail!("nothing to export: file sounds into a collection other than Raw");
+        }
+        let empty = std::fs::read_dir(dest)
+            .map(|mut d| d.all(|e| e.is_ok_and(|e| e.file_name() == ".DS_Store")))
+            .unwrap_or(true);
+        let out = if empty {
+            dest.to_path_buf()
+        } else {
+            let base = format!(
+                "Heard export {}",
+                chrono::Local::now().format("%Y-%m-%d %H%M")
+            );
+            (1..)
+                .map(|k| match k {
+                    1 => dest.join(&base),
+                    k => dest.join(format!("{base}-{k}")),
+                })
+                .find(|p| !p.exists())
+                .unwrap()
+        };
+        if out.starts_with(&self.root) {
+            anyhow::bail!("pick a folder outside the library");
+        }
+        std::fs::create_dir_all(&out)?;
+        let mut n = 0;
+        for it in &items {
+            let sc = self.read_sidecar(it);
+            let stem = Self::free_stem(&out, &Self::export_stem(it, &sc));
+            let to = out.join(format!("{stem}.wav"));
+            match &it.edit {
+                Some(edit) => {
+                    std::fs::copy(edit, &to)
+                        .with_context(|| format!("copying {}", edit.display()))?;
+                }
+                // An untouched WAV goes out as it is; other formats are decoded and written
+                // as WAV matching the source (24-bit, or 32-bit float for float sources).
+                None if ext_of(&it.orig) == "wav" => {
+                    std::fs::copy(&it.orig, &to)
+                        .with_context(|| format!("copying {}", it.orig.display()))?;
+                }
+                None => {
+                    let (a, info) = crate::io::load(&it.orig)
+                        .with_context(|| format!("decoding {}", it.orig.display()))?;
+                    let (bits, float) = crate::io::export_bits(&info);
+                    crate::io::save_wav(&a, &to, bits, float)?;
+                }
+            }
+            n += 1;
+        }
+        Ok((out, n))
     }
 
     /// Copy external files into the Inbox (never overwrites; adds a numeric suffix).

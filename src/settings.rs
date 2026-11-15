@@ -67,6 +67,8 @@ pub struct Settings {
     pub loop_play: bool,
     /// Show the spectrogram under the waveform in the editor.
     pub spectrogram: bool,
+    /// Snap selection and trim edges to the nearest zero crossing (no clicks at the cuts).
+    pub snap_zero: bool,
     /// Vim-style modal keys (NORMAL / VISUAL / INSERT / COMMAND).
     pub vim_keys: bool,
     pub sidebar_compact: bool,
@@ -167,6 +169,7 @@ impl Default for Settings {
             audition: false,
             loop_play: false,
             spectrogram: false,
+            snap_zero: true,
             vim_keys: true,
             sidebar_compact: false,
             sort: SortKey::Date,

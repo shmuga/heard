@@ -321,6 +321,7 @@ pub enum Icon {
     Stop,
     Loop,
     Spectrum,
+    ZeroCross,
 }
 
 /// Flat glyph colours on the toolbar: black = on / available, grey = off, light = disabled.
@@ -511,6 +512,18 @@ fn draw_icon(p: &egui::Painter, c: egui::Pos2, icon: Icon, col: Color32, bg: Col
             ));
             poly(&[(-11.0, -1.0), (-4.5, -1.0), (-7.8, 4.5)], col);
             poly(&[(11.0, 1.0), (4.5, 1.0), (7.8, -4.5)], col);
+        }
+        // Zero crossing: one sine cycle over the axis, a dot where it crosses.
+        Icon::ZeroCross => {
+            line(&[(-11.0, 0.0), (11.0, 0.0)], Stroke::new(1.4, col));
+            let pts: Vec<(f32, f32)> = (0..=24)
+                .map(|i| {
+                    let x = -10.0 + 20.0 * i as f32 / 24.0;
+                    (x, -7.5 * (x / 10.0 * std::f32::consts::PI).sin())
+                })
+                .collect();
+            line(&pts, Stroke::new(2.4, col));
+            p.circle_filled(at(0.0, 0.0), 3.4, col);
         }
         // Spectrum: bars of different heights on a baseline.
         Icon::Spectrum => {

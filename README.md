@@ -57,6 +57,16 @@ GPL-3.0 · [credits](CREDITS.md)
 - **Import…** (⌘I) or dropping files copies recordings into the **Inbox**. You can also point
   the Inbox at a recorder's card or a Voice Memos export folder (Settings › Library folders).
 
+## Getting your sounds out
+
+**Export library…** (toolbar, `:exportlib`) copies every filed sound — its saved edit, or the
+original (as WAV) when it's untouched — into one flat folder, named `tags_collection_name.wav` (tags joined with `-`,
+left out when there are none): `hum-night_Drone_fridge.wav`, `Percussion_shop till drawer.wav`.
+The Inbox and the **Raw** collection are skipped: keep unprocessed takes you want to hold on to
+in a collection called `Raw`. An empty folder is used as it is; otherwise a dated
+`Heard export …` sub-folder is made inside it, so nothing is ever overwritten. Names that
+clash get `-2`.
+
 Formats: WAV / BWF (16/24/32-bit, float), AIFF, FLAC, MP3, M4A (AAC and ALAC, i.e. iPhone
 Voice Memos), Ogg Vorbis, CAF. BWF recording dates from field recorders are shown in the
 editor.
@@ -99,6 +109,10 @@ Double-click a sound (or Enter) to open it. The **waveform** shows the processed
   horizontal lines, hiss as a haze at the top.
 - **Trim** (`c`) shows the whole recording: drag the `[` `]` handles, or `s` / `e` to set the
   start / end at the playhead, or `h l [ ]` to nudge.
+- **Trim to selection** (`C`, `:trim sel`, or the button on the Trim card) works in trim mode
+  and on the result. On the result the selection maps back to the sound's cut; when a node
+  after the cut changes time (Paulstretch, Varispeed, Reverse…), a second Trim goes in just
+  before Output and crops what you hear.
 - **Slice:** `,` drops a marker at the playhead (or **Auto markers** / `:markers auto -30`
   for one marker per hit), then **Split** (`:split`) cuts what you see into new Inbox
   recordings (`name-01.wav` …). **Selection to Inbox** (`:extract`) keeps one part.
@@ -178,13 +192,13 @@ with `/`.
 - **Library:** `hjkl` · `Space` play · `Enter` open · `v` / `s` select / mark · `/` search ·
   `cw` rename · `t` tag · `m` file · `dd` / `x` trash · `yy` / `p` copy a recipe onto the
   selection.
-- **Editor:** `Space` play · `( ) { }` playhead · `0 $` · `,` marker · `c` trim · `s`
+- **Editor:** `Space` play · `( ) { }` playhead · `0 $` · `,` marker · `c` trim · `C` trim to selection · `s`
   spectrogram · `\` before/after · `j k h l H L` sliders · `w b` nodes · `B` bypass ·
   `o O` add node · `R M` randomize / mutate · `] [` next / previous sound · `Tab` patch ·
   `:w :q :wq :q!`.
 - **Commands:** `:file Coll`, `:name …`, `:tag a b`, `:notes …`, `:preset Name`,
   `:savepreset Name`, `:trim 0.4 3.2`, `:trim sel`, `:markers auto -30|clear|1.5`, `:split`,
-  `:extract`, `:learn`, `:saveas Coll`, `:import`, `:importfolder`,
+  `:extract`, `:learn`, `:saveas Coll`, `:import`, `:importfolder`, `:exportlib`,
   `:set loop|spectrogram|audition|novim`.
 - **⌘:** ⌘S save · ⇧⌘S save copy · ⌘Z · ⌘K command line · ⌘F search · ⌘1 ⌘2 ⌘, views ·
   ⌘I / ⇧⌘I import · ⌘↩ file · ⌘[ ⌘] previous / next · ⌘Backspace trash.

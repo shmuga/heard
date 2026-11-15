@@ -213,6 +213,39 @@ impl Rng {
     }
 }
 
+impl Audio {
+    /// The zero crossing nearest to `t` (seconds), looking up to `window` seconds either way;
+    /// `t` itself when there's none. Uses the channel sum, so a stereo cut lands where both
+    /// sides are quiet together; the crossing snaps to whichever neighbouring sample is
+    /// closer to zero.
+    pub fn zero_crossing_near(&self, t: f64, window: f64) -> f64 {
+        let n = self.frames();
+        if n < 2 || self.ch.is_empty() {
+            return t;
+        }
+        let rate = self.rate.max(1) as f64;
+        let at = |i: usize| self.ch.iter().map(|c| c[i]).sum::<f32>();
+        let c = (t * rate).round().clamp(0.0, (n - 1) as f64) as usize;
+        if c == 0 || c == n - 1 {
+            return t; // the ends are cut points already
+        }
+        let w = ((window * rate) as usize).max(1);
+        for d in 0..=w {
+            for i in [c.checked_sub(d), Some(c + d)].into_iter().flatten() {
+                if i + 1 >= n {
+                    continue;
+                }
+                let (a, b) = (at(i), at(i + 1));
+                if a == 0.0 || (a < 0.0) != (b < 0.0) {
+                    let k = if a.abs() <= b.abs() { i } else { i + 1 };
+                    return k as f64 / rate;
+                }
+            }
+        }
+        t
+    }
+}
+
 /// Format a time in seconds as m:ss.mmm (or s.mmm under a minute).
 pub fn fmt_time(s: f64) -> String {
     let s = s.max(0.0);
