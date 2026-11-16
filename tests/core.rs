@@ -654,7 +654,9 @@ fn export_processed_is_flat_named_by_tags_collection_name_skips_raw() {
         std::fs::copy(&it.orig, e).unwrap();
     }
     let out = tempfile::tempdir().unwrap();
-    let (dir, n) = lib.export_processed(out.path()).unwrap();
+    let (dir, n) = lib
+        .export_processed(out.path(), Default::default())
+        .unwrap();
     assert_eq!(
         (dir.as_path(), n),
         (out.path(), 3),
@@ -674,9 +676,61 @@ fn export_processed_is_flat_named_by_tags_collection_name_skips_raw() {
         ]
     );
     // Again: the folder isn't empty now, so a dated sub-folder; nothing overwritten.
-    let (dir2, n2) = lib.export_processed(out.path()).unwrap();
+    let (dir2, n2) = lib
+        .export_processed(out.path(), Default::default())
+        .unwrap();
     assert_eq!(n2, 3);
     assert_ne!(dir2, dir);
     assert!(dir2.starts_with(out.path()));
     assert!(dir2.join("Drone_fridge.wav").exists());
+}
+
+#[test]
+fn export_converts_bits_and_channels() {
+    use heard::io::{ExportBits, ExportChannels, ExportFormat};
+    let (_d, lib) = lib_with(&["a.wav"]);
+    lib.create_collection("Drone").unwrap();
+    let it = lib.inbox_items().remove(0);
+    let sc = Sidecar {
+        name: "hum".into(),
+        ..Default::default()
+    };
+    let filed = lib.file_into(&it, "Drone", &sc).unwrap();
+    // A stereo 24-bit edit with different sides.
+    let l = sine(220.0, 0.3, 0.5);
+    let r: Vec<f32> = l.iter().map(|v| v * 0.5).collect();
+    let edit = Audio::from_channels(SR, vec![l.clone(), r.clone()]);
+    heard::io::save_wav(&edit, &lib.edit_path(&filed).unwrap(), 24, false).unwrap();
+    let spec = |fmt: ExportFormat| {
+        let out = tempfile::tempdir().unwrap();
+        let (dir, _) = lib.export_processed(out.path(), fmt).unwrap();
+        let p = dir.join("Drone_hum.wav");
+        let s = hound::WavReader::open(&p).unwrap().spec();
+        let (a, _) = heard::io::load(&p).unwrap();
+        (s.bits_per_sample, s.channels, a, out)
+    };
+    // Source: copied as is.
+    let (bits, ch, _, _o) = spec(Default::default());
+    assert_eq!((bits, ch), (24, 2));
+    // 16-bit mono: the average of the sides (within dither).
+    let (bits, ch, a, _o) = spec(ExportFormat {
+        bits: ExportBits::B16,
+        channels: ExportChannels::Mono,
+    });
+    assert_eq!((bits, ch), (16, 1));
+    let err = a.ch[0]
+        .iter()
+        .zip(l.iter().zip(&r))
+        .map(|(m, (x, y))| (m - (x + y) / 2.0).abs())
+        .fold(0.0f32, f32::max);
+    assert!(err < 2.0 / 32767.0 * 2.0, "{err}");
+    // 24-bit stereo from mono: both sides equal.
+    let mono = Audio::mono(SR, l.clone());
+    heard::io::save_wav(&mono, &lib.edit_path(&filed).unwrap(), 24, false).unwrap();
+    let (bits, ch, a, _o) = spec(ExportFormat {
+        bits: ExportBits::B24,
+        channels: ExportChannels::Stereo,
+    });
+    assert_eq!((bits, ch), (24, 2));
+    assert_eq!(a.ch[0], a.ch[1]);
 }

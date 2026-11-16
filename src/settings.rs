@@ -69,6 +69,8 @@ pub struct Settings {
     pub spectrogram: bool,
     /// Snap selection and trim edges to the nearest zero crossing (no clicks at the cuts).
     pub snap_zero: bool,
+    /// Library export: bit depth and channels.
+    pub export: crate::io::ExportFormat,
     /// Vim-style modal keys (NORMAL / VISUAL / INSERT / COMMAND).
     pub vim_keys: bool,
     pub sidebar_compact: bool,
@@ -170,6 +172,7 @@ impl Default for Settings {
             loop_play: false,
             spectrogram: false,
             snap_zero: true,
+            export: Default::default(),
             vim_keys: true,
             sidebar_compact: false,
             sort: SortKey::Date,

@@ -346,6 +346,8 @@ pub struct HeardApp {
     /// Trash keys from the last "move to trash", for `u` / ⌘Z in the library.
     pub last_trashed: Vec<String>,
     pub confirm: Option<Confirm>,
+    /// The Export library dialog is open.
+    pub export_dialog: bool,
     pub marquee: Option<Marquee>,
     /// Collection being renamed in the sidebar: (target, text field).
     pub renaming: Option<(RenameTarget, String)>,
@@ -419,6 +421,7 @@ impl HeardApp {
             inbox_count: 0,
             trash_count: 0,
             last_trashed: vec![],
+            export_dialog: false,
             confirm: None,
             marquee: None,
             renaming: None,
@@ -1752,10 +1755,115 @@ impl HeardApp {
     /// `tags_collection_name.wav`.
     pub fn export_library(&mut self, ctx: &egui::Context, dest: PathBuf) {
         let Some(lib) = self.lib.clone() else { return };
-        self.status = format!("Exporting to {}…", dest.display());
+        let fmt = self.settings.export;
+        self.status = format!("Exporting ({}) to {}…", fmt.label(), dest.display());
         self.worker.spawn(ctx, move || {
-            Msg::LibraryExported(lib.export_processed(&dest).map_err(|e| format!("{e:#}")))
+            Msg::LibraryExported(
+                lib.export_processed(&dest, fmt)
+                    .map_err(|e| format!("{e:#}")),
+            )
         });
+    }
+
+    /// Ask for the export folder, then export.
+    pub fn export_library_pick(&mut self, ctx: &egui::Context) {
+        if let Some(d) = rfd::FileDialog::new()
+            .set_title("Export the library — a flat folder of tags_collection_name.wav")
+            .pick_folder()
+        {
+            self.export_library(ctx, d);
+        }
+    }
+
+    /// Export library: format choice, then the folder.
+    fn export_modal(&mut self, ctx: &egui::Context) {
+        if !self.export_dialog {
+            return;
+        }
+        use crate::io::{ExportBits as B, ExportChannels as C};
+        let mut fmt = self.settings.export;
+        let mut go = None;
+        let m = egui::Modal::new(egui::Id::new("export")).show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.label(
+                egui::RichText::new("Export library")
+                    .strong()
+                    .size(15.0)
+                    .color(theme::TEXT),
+            );
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(
+                    "Every filed sound except Raw, as tags_collection_name.wav in one folder.",
+                )
+                .color(theme::TEXT_DIM),
+            );
+            ui.add_space(8.0);
+            egui::Grid::new("export_fmt")
+                .num_columns(2)
+                .spacing([10.0, 6.0])
+                .show(ui, |ui| {
+                    ui.label("Bits");
+                    ui.horizontal(|ui| {
+                        for (v, l, tip) in [
+                            (B::Source, "Source", "24-bit, or 32-bit float for float sources; untouched WAVs are copied as they are"),
+                            (B::B16, "16-bit", "With TPDF dither"),
+                            (B::B24, "24-bit", ""),
+                        ] {
+                            let r = theme::sel(ui, fmt.bits == v, l);
+                            let r = if tip.is_empty() { r } else { r.on_hover_text(tip) };
+                            if r.clicked() {
+                                fmt.bits = v;
+                            }
+                        }
+                    });
+                    ui.end_row();
+                    ui.label("Channels");
+                    ui.horizontal(|ui| {
+                        for (v, l, tip) in [
+                            (C::Source, "Source", "As recorded / rendered"),
+                            (C::Mono, "Mono", "Average of the channels"),
+                            (C::Stereo, "Stereo", "Mono is doubled to both sides"),
+                        ] {
+                            if theme::sel(ui, fmt.channels == v, l).on_hover_text(tip).clicked() {
+                                fmt.channels = v;
+                            }
+                        }
+                    });
+                    ui.end_row();
+                });
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .button("Choose folder & export…")
+                    .on_hover_text("Enter")
+                    .clicked()
+                {
+                    go = Some(true);
+                }
+                if ui.button("Cancel").on_hover_text("Esc").clicked() {
+                    go = Some(false);
+                }
+            });
+        });
+        if fmt != self.settings.export {
+            self.settings.export = fmt;
+            self.save_settings();
+        }
+        if m.should_close() && go.is_none() {
+            go = Some(false);
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+            go = Some(true);
+        }
+        match go {
+            Some(true) => {
+                self.export_dialog = false;
+                self.export_library_pick(ctx);
+            }
+            Some(false) => self.export_dialog = false,
+            None => {}
+        }
     }
 
     pub fn import_folder(&mut self, ctx: &egui::Context, folder: PathBuf) {
@@ -1797,7 +1905,9 @@ impl HeardApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.leave = Some(Leave::Quit);
         }
-        if self.confirm.is_some() || self.leave.is_some() {
+        if self.export_dialog {
+            // The export dialog handles its own keys.
+        } else if self.confirm.is_some() || self.leave.is_some() {
             // A dialog is open: Enter = confirm / save, Esc = cancel, N = don't save.
             match modal_key(&ctx) {
                 Some(ModalKey::Yes) => {
@@ -1916,6 +2026,7 @@ impl HeardApp {
         self.finish_drag(&ctx);
         self.help_overlay(&ctx);
         self.confirm_modal(&ctx);
+        self.export_modal(&ctx);
         self.guard_view(prev_view);
         self.leave_modal(&ctx);
         self.text_focus = ctx.text_edit_focused();

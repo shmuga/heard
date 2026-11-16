@@ -67,6 +67,15 @@ in a collection called `Raw`. An empty folder is used as it is; otherwise a date
 `Heard export …` sub-folder is made inside it, so nothing is ever overwritten. Names that
 clash get `-2`.
 
+The dialog also sets the format, remembered for next time:
+- **Bits:** *Source* (edits are 24-bit, or 32-bit float for float sources; untouched WAVs are
+  copied as they are), *16-bit* (with TPDF dither), or *24-bit*.
+- **Channels:** *Source*, *Mono* (the average of the channels) or *Stereo* (mono is doubled
+  to both sides).
+
+`:exportlib 16 mono` (any of `16 24 mono stereo source`) sets the format and goes straight to
+the folder picker.
+
 Formats: WAV / BWF (16/24/32-bit, float), AIFF, FLAC, MP3, M4A (AAC and ALAC, i.e. iPhone
 Voice Memos), Ogg Vorbis, CAF. BWF recording dates from field recorders are shown in the
 editor.

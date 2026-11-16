@@ -1215,13 +1215,33 @@ impl HeardApp {
             }
             "play" => self.act(ctx, Act::Play),
             "exportlib" | "exportlibrary" => {
-                if let Some(d) = rfd::FileDialog::new()
-                    .set_title(
-                        "Export the library (all but Raw) — a flat folder of tags_collection_name.wav",
-                    )
-                    .pick_folder()
-                {
-                    self.export_library(ctx, d);
+                // :exportlib opens the dialog; :exportlib 16 mono (or source / 24 / stereo)
+                // sets the format and goes straight to the folder picker.
+                use crate::io::{ExportBits as B, ExportChannels as C};
+                let words: Vec<&str> = arg.split_whitespace().collect();
+                if words.is_empty() {
+                    self.export_dialog = true;
+                } else {
+                    let mut fmt = self.settings.export;
+                    let mut ok = true;
+                    for w in &words {
+                        match *w {
+                            "16" => fmt.bits = B::B16,
+                            "24" => fmt.bits = B::B24,
+                            "mono" => fmt.channels = C::Mono,
+                            "stereo" => fmt.channels = C::Stereo,
+                            "source" | "src" => fmt = Default::default(),
+                            _ => ok = false,
+                        }
+                    }
+                    if ok {
+                        self.settings.export = fmt;
+                        self.save_settings();
+                        self.export_library_pick(ctx);
+                    } else {
+                        self.status =
+                            "Usage: :exportlib [16|24] [mono|stereo] · :exportlib source".into();
+                    }
                 }
             }
             "importfolder" | "importdir" => {

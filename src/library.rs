@@ -681,9 +681,13 @@ impl Library {
 
     /// Export every filed sound outside the `Raw` collection (its rendered edit, or the
     /// original when it has none: filing, naming and tagging it is the processing) as a flat
-    /// list of WAVs named `tags_collection_name.wav`. Into `dest` if it's empty, else into a new
+    /// list of WAVs named `tags_collection_name.wav`, converted to `fmt`. Into `dest` if it's empty, else into a new
     /// dated sub-folder of it, so nothing there is ever overwritten. Returns (folder, count).
-    pub fn export_processed(&self, dest: &Path) -> Result<(PathBuf, usize)> {
+    pub fn export_processed(
+        &self,
+        dest: &Path,
+        fmt: crate::io::ExportFormat,
+    ) -> Result<(PathBuf, usize)> {
         let items: Vec<Item> = self
             .all_items()
             .into_iter()
@@ -719,23 +723,16 @@ impl Library {
             let sc = self.read_sidecar(it);
             let stem = Self::free_stem(&out, &Self::export_stem(it, &sc));
             let to = out.join(format!("{stem}.wav"));
-            match &it.edit {
-                Some(edit) => {
-                    std::fs::copy(edit, &to)
-                        .with_context(|| format!("copying {}", edit.display()))?;
-                }
-                // An untouched WAV goes out as it is; other formats are decoded and written
-                // as WAV matching the source (24-bit, or 32-bit float for float sources).
-                None if ext_of(&it.orig) == "wav" => {
-                    std::fs::copy(&it.orig, &to)
-                        .with_context(|| format!("copying {}", it.orig.display()))?;
-                }
-                None => {
-                    let (a, info) = crate::io::load(&it.orig)
-                        .with_context(|| format!("decoding {}", it.orig.display()))?;
-                    let (bits, float) = crate::io::export_bits(&info);
-                    crate::io::save_wav(&a, &to, bits, float)?;
-                }
+            let from = it.display_path();
+            // In the source format, a WAV (an edit, or an untouched WAV original) is copied
+            // as it is. Otherwise decode and write: the chosen format, or for other source
+            // formats a WAV matching the source (24-bit, or 32-bit float for float sources).
+            if fmt.is_source() && ext_of(from) == "wav" {
+                std::fs::copy(from, &to).with_context(|| format!("copying {}", from.display()))?;
+            } else {
+                let (a, info) = crate::io::load(from)
+                    .with_context(|| format!("decoding {}", from.display()))?;
+                fmt.write(a, &info, &to)?;
             }
             n += 1;
         }

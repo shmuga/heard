@@ -173,6 +173,101 @@ pub fn export_bits(info: &SoundInfo) -> (u16, bool) {
     if info.float { (32, true) } else { (24, false) }
 }
 
+/// Bit depth for exported files.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ExportBits {
+    /// As rendered: 24-bit, or 32-bit float for float sources (untouched WAVs are copied).
+    #[default]
+    Source,
+    B16,
+    B24,
+}
+
+/// Channel layout for exported files.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ExportChannels {
+    #[default]
+    Source,
+    /// Average of the channels.
+    Mono,
+    /// Mono is doubled; more than two channels keep the first two.
+    Stereo,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ExportFormat {
+    pub bits: ExportBits,
+    pub channels: ExportChannels,
+}
+
+impl ExportFormat {
+    pub fn is_source(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Short description, e.g. "16-bit mono".
+    pub fn label(&self) -> String {
+        let b = match self.bits {
+            ExportBits::Source => "source bits",
+            ExportBits::B16 => "16-bit",
+            ExportBits::B24 => "24-bit",
+        };
+        let c = match self.channels {
+            ExportChannels::Source => "source channels",
+            ExportChannels::Mono => "mono",
+            ExportChannels::Stereo => "stereo",
+        };
+        format!("{b}, {c}")
+    }
+
+    /// Convert the channels.
+    pub fn convert(&self, a: Audio) -> Audio {
+        match (self.channels, a.channels()) {
+            (ExportChannels::Mono, n) if n > 1 => Audio::mono(a.rate, a.mix_mono()),
+            (ExportChannels::Stereo, 1) => {
+                let c = a.ch[0].clone();
+                Audio::from_channels(a.rate, vec![c.clone(), c])
+            }
+            (ExportChannels::Stereo, n) if n > 2 => {
+                let mut ch = a.ch;
+                ch.truncate(2);
+                Audio::from_channels(a.rate, ch)
+            }
+            _ => a,
+        }
+    }
+
+    /// Write `a` (channels converted) to `path`. `info` is the file it came from.
+    pub fn write(&self, a: Audio, info: &SoundInfo, path: &Path) -> Result<()> {
+        let a = self.convert(a);
+        match self.bits {
+            ExportBits::Source => {
+                let (bits, float) = export_bits(info);
+                save_wav(&a, path, bits, float)
+            }
+            ExportBits::B16 => save_wav_dithered(&a, path, 16),
+            ExportBits::B24 => save_wav(&a, path, 24, false),
+        }
+    }
+}
+
+/// Integer WAV with TPDF dither (±1 LSB triangular noise), for reducing to 16-bit without
+/// truncation distortion on quiet tails.
+pub fn save_wav_dithered(a: &Audio, path: &Path, bits: u16) -> Result<()> {
+    let lsb = 1.0 / ((1i64 << (bits - 1)) - 1) as f32;
+    let mut r = crate::audio::Rng::new(0x5eed);
+    let ch =
+        a.ch.iter()
+            .map(|c| {
+                c.iter()
+                    .map(|v| v + (r.f() - r.f()) * lsb)
+                    .collect::<Vec<f32>>()
+            })
+            .collect();
+    save_wav(&Audio::from_channels(a.rate, ch), path, bits, false)
+}
+
 /// Write a WAV (atomically: temp file + rename). Samples are clipped to -1..1 for integer
 /// formats.
 pub fn save_wav(a: &Audio, path: &Path, bits: u16, float: bool) -> Result<()> {

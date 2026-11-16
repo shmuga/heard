@@ -51,7 +51,8 @@ GPL-3.0. See README for usage, CREDITS.md for components.
   sources).
 
 - Library export: every filed sound outside the special `Raw` collection (its rendered edit,
-  or the original as WAV), copied flat as `tags_collection_name.wav` into an empty folder or a new dated sub-folder.
+  or the original as WAV), copied flat as `tags_collection_name.wav` into an empty folder or a new dated sub-folder. Optional conversion: 16-bit (TPDF dither) /
+  24-bit, mono (average) / stereo (mono doubled).
 
 ## Look
 - Found's light-grey patcher theme: mid-grey chrome, dark object boxes, pastel node tints,

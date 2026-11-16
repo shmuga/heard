@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0
+
+### New
+- Export library: choose the format in a dialog: bits *Source* / *16-bit* (TPDF dither) /
+  *24-bit*, channels *Source* / *Mono* / *Stereo*. Remembered in Settings.
+  `:exportlib 16 mono` skips the dialog.
+
 ## 0.2.0
 
 ### New
